@@ -1,3 +1,6 @@
+//Invoked from API Gateway with Lambda Proxy Integration
+//
+
 import { DynamoDBClient, QueryCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 
