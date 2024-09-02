@@ -25,10 +25,12 @@ In order to upload a Lambda function to AWS, you need to package it in a .zip fi
 
 These files will all exist in your remote's directory. Simply select all 3 files and compress to a .zip file using your preferred archiver.
 
-You can also navigate to the containing directory in your terminal and run the following:
+If you are able to zip files from your terminal, you may also be able to navigate to the containing directory in your terminal and run the following:
 ```
 zip lambdapackage.zip index.js package.json node_modules
 ```
+
+The exact terminal command may differ depending on your compression software's configuration.
 
 ## License
 
