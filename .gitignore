@@ -1,2 +1,2 @@
-accountTransaction/node_modules
-buyStock/node_modules
+*/node_modules
+*.zip  

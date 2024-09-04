@@ -8,8 +8,9 @@ export const handler = async (event) => {
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
     const { userID, ticker, amount } = event;
-    const currentDate = new Date();
-    const isoDate = currentDate.toISOString();
+    let currentDate = new Date();
+    let isoDate = currentDate.toISOString();
+    
 
     if (typeof userID !== 'string' || typeof ticker !== 'string' || typeof amount !== 'number' || amount <= 0) {
         return {
@@ -19,7 +20,7 @@ export const handler = async (event) => {
     }
     
     try {
-        // Grab the most recent stock price from StockDB
+    // Grab the most recent stock price from StockDB
         const stockQueryParams = {
             TableName: staticTableName,
             KeyConditionExpression: 'ticker = :ticker',
@@ -29,86 +30,160 @@ export const handler = async (event) => {
             ScanIndexForward: false,
             Limit: 1
         };
-
         const stockQueryCommand = new QueryCommand(stockQueryParams);
         const stockQueryResult = await dynamoClient.send(stockQueryCommand);
-
         if (stockQueryResult.Items.length === 0) {
             return {
                 statusCode: 404,
                 body: JSON.stringify({ error: 'Stock price not found for the ticker.' })
             };
+        } 
+        
+    // Pull user's PORTFOLIO#KEY metadata
+        const portfolioQueryParams = {
+            TableName: dynamicTableName,
+            IndexName: LSIName,
+            KeyConditionExpression: 'userID = :userID',
+            FilterExpression: 'metadata = :metadata',
+            ExpressionAttributeValues: {
+                ':userID': userID,
+                ':metadata': 'PORTFOLIO#KEY'
+            },
+            ScanIndexForward: false,
+            Limit: 1
+        };
+        const portfolioQueryCommand = new QueryCommand(portfolioQueryParams);
+        try {
+            var portfolioQueryResult = await dynamoClient.send(portfolioQueryCommand);
+        } catch (error) {
+            var portfolioQueryResult = [];
         }
         
+        
+    // Create a new entry for stock purchase
         const mostRecentItem = stockQueryResult.Items[0];
         const stockPrice = parseFloat(mostRecentItem.price.N); // <--- CURRENT STOCK PRICE AS NUMBER
         const units = amount / stockPrice;
         const uuid = uuidv4();
+        const buyMetadata = `${ticker}#BUY`;
+        
+        console.log(portfolioQueryResult);
+        let portfolio = [];
+        if (portfolioQueryResult.Items?.length > 0) {
+            const portfolioItem = portfolioQueryResult.Items[0];
+            if (portfolioItem.portfolio && portfolioItem.portfolio.L) {
+                portfolio = portfolioItem.portfolio.L.map(item => item.S);
+            }
+        }
+        console.log("Hello World!");
+        let newPortfolioBalance = 0;
 
-        // Create a new entry for stock purchase
-        const metadata = `${ticker}#BUY`;
+        // Check user's current stock balance
+        if (portfolio.includes(ticker)) {
+            //Query the latest stock purchase or sale for this ticker
+            const currentStockQueryParams = {
+                TableName: dynamicTableName,
+                IndexName: LSIName,
+                KeyConditionExpression: 'userID = :userID',
+                FilterExpression: 'begins_with(metadata, :metaData)',
+                ExpressionAttributeValues: {
+                    ':userID': userID,
+                    ':metadata': ticker
+                },
+                ScanIndexForward: false,
+                Limit: 1
+            };
+            const currentStockQueryCommand = new QueryCommand(currentStockQueryParams);
+            const currentStockQueryResult = await dynamoClient.send(currentStockQueryCommand);
+
+            // Calculate new balances
+            if (currentStockQueryResult.Items.length > 0) {
+                const lastTickerTransaction = currentStockQueryResult.Items[0];
+                newPortfolioBalance = parseFloat(lastTickerTransaction.balance.N) + parseFloat(units.toFixed(3));
+            }
+        } else {
+            portfolio.push(ticker);
+            newPortfolioBalance = units.toFixed(3);
+        }
+        
+        // Create new purchase entry in db
         const putParams = {
             TableName: dynamicTableName,
             Item: {
                 userID: {S: userID},
                 date: {S: isoDate},
-                metadata: {S: metadata},
-                price: {N: stockPrice.toFixed(2)}, 
-                amount: {N: amount.toFixed(2)},   
+                metadata: {S: buyMetadata},
+                value: {N: stockPrice.toFixed(2)},  
                 units: {N: units.toFixed(3)},
+                balance: {N: newPortfolioBalance.toString()},
                 uuid: {S: uuid}
             }
         };
-
         const putCommand = new PutItemCommand(putParams);
         await dynamoClient.send(putCommand);
 
-        // Add an entry for ACCOUNT#WITHDRAW metadata
+    // Add an entry for ACCOUNT#WITHDRAW metadata
         // Get the current account balance
         const accountQueryParams = {
             TableName: dynamicTableName,
             IndexName: LSIName,
             KeyConditionExpression: 'userID = :userID AND begins_with(metadata, :skPrefix)',
             ExpressionAttributeValues: {
-                ':userID': { S: userID },
-                ':skPrefix': { S: 'ACCOUNT#' }
+                ':userID': {S: userID},
+                ':skPrefix': {S: 'ACCOUNT#'}
             },
             ScanIndexForward: false,
             Limit: 1
         };
-
+        
         const accountQueryCommand = new QueryCommand(accountQueryParams);
         const accountQueryResult = await dynamoClient.send(accountQueryCommand);
 
-        let accountBalance = 0;
+        var accountBalance = 0;
         if (accountQueryResult.Items.length > 0) {
-            const latestAccountItem = accountQueryResult.Items[0];
-            if (latestAccountItem.balance && latestAccountItem.balance.N) {
-                accountBalance = parseFloat(latestAccountItem.balance.N);
+            let lastAccountItem = accountQueryResult.Items[0];
+            if (lastAccountItem.balance && lastAccountItem.balance.N) {
+                accountBalance = parseFloat(lastAccountItem.balance.N);
             }
         } else {
             console.log('No account entries found.');
         }
 
         // Update the new account balance after withdrawal
+        currentDate = new Date();
+        isoDate = currentDate.toISOString();
+        const withdrawAmount = `-${amount}`;
         const newAccountBalance = accountBalance - amount;
-        const negativeChange = `-${amount}`;
         const withdrawParams = {
             TableName: dynamicTableName,
             Item: {
-                userID: { S: userID },
-                date: { S: isoDate },
-                metadata: { S: 'ACCOUNT#WITHDRAW' },
-                price: { N: '0' },
-                change: { N: negativeChange },
-                balance: { N: newAccountBalance.toString() },
+                userID: {S: userID},
+                date: {S: isoDate},
+                metadata: {S: 'ACCOUNT#WITHDRAW'},
+                value: {N: withdrawAmount},
                 units: {N: '0'},
+                balance: {N: newAccountBalance.toString()},
                 uuid: {S: uuid}
             }
         };
 
         const withdrawCommand = new PutItemCommand(withdrawParams);
         await dynamoClient.send(withdrawCommand);
+
+    // Update the user's portfolio array key
+        isoDate = currentDate.toISOString();
+        const startDate = portfolioQueryResult.Items.length > 0 ? portfolioQueryResult.Items[0].date.S : isoDate;
+        const putPortfolioParams = {
+            TableName: dynamicTableName,
+            Item: {
+                userID: {S: userID},
+                date: {S: startDate},
+                metadata: {S: 'PORTFOLIO#KEY'},
+                portfolio: {L: portfolio},
+            }
+        };
+        const putPortfolioCommand = new PutItemCommand(putPortfolioParams);
+        await dynamoClient.send(putPortfolioCommand);
 
         return {
             statusCode: 200,

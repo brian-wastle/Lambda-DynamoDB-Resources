@@ -1,20 +1,16 @@
 //Invoked from API Gateway with Lambda Proxy Integration
-//
 
 import { DynamoDBClient, QueryCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
-import { v4 as uuidv4 } from 'uuid';
 
-const client = new DynamoDBClient({ region: 'us-east-1' });
+const client = new DynamoDBClient({ region: process.env.REGION_NAME });
 
 export const handler = async (event) => {
     const tableName = process.env.TABLE_NAME;
-    const userID = event.userID; 
-    const depositAmount = event.amount; 
-    
-    if (typeof depositAmount !== 'number' || depositAmount <= 0) {
+    const { userID,  transactionAmount, uuid } = event;
+    if (typeof transactionAmount !== 'number' || transactionAmount == 0) {
         return {
             statusCode: 400,
-            body: JSON.stringify({ error: 'Bad Request: Request is NaN or less than 0.' })
+            body: JSON.stringify({ error: 'Bad Request: Request is NaN or 0.' })
         };
     }
 
@@ -35,33 +31,37 @@ export const handler = async (event) => {
 
         const queryCommand = new QueryCommand(queryParams);
         const queryResult = await client.send(queryCommand);
-
         let currentBalance = 0;
-
         if (queryResult.Items.length > 0) {
             const latestItem = queryResult.Items[0];
-            if (latestItem.balance && latestItem.balance.N) {
-                currentBalance = parseFloat(latestItem.balance.N);
+            if (latestItem.balance && latestItem.value.N) {
+                currentBalance = parseFloat(latestItem.value.N);
             }
         } else {
             console.log('Message: queryResult.Items.length equals zero.')
         }
 
-        // Update balance
-        const newBalance = currentBalance + depositAmount;
-        const uuid = uuidv4();
+        if (transactionAmount < 0 && currentBalance < Math.abs(transactionAmount)) {
+            return {
+                statusCode: 400,
+                body: JSON.stringify({ message: 'Withdraw request exceeds allowable funds.' })
+            };
+        }
 
+        // Update balance
+        const uuidString = uuid ? uuid : 'null';
+        const newBalance = currentBalance + transactionAmount;
+        const transactionType = transactionAmount > 0 ? 'ACCOUNT#DEPOSIT' : 'ACCOUNT#WITHDRAW';
         const params = {
             TableName: tableName,
             Item: {
-                userID: { S: userID },
-                metadata: { S: 'ACCOUNT#DEPOSIT' },
-                date: { S: isoDate }, 
-                price: { N: '0' }, 
-                change: { N: depositAmount.toString() }, 
-                balance: { N: newBalance.toString() } ,
-                units: { N: '0' },
-                uuid: {S: uuid }
+                userID: {S: userID},
+                date: {S: isoDate}, 
+                metadata: {S: transactionType},
+                value: {N: transactionAmount} ,
+                units: {N: '0'},
+                balance: {N: newBalance.toString()},
+                uuid: {S: uuidString}
             }
         };
 
