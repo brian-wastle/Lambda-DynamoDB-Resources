@@ -46,8 +46,8 @@ export const handler = async (event) => {
             KeyConditionExpression: 'userID = :userID',
             FilterExpression: 'metadata = :metadata',
             ExpressionAttributeValues: {
-                ':userID': userID, // Replace with the actual userID
-                ':metadata': 'PORTFOLIO#KEY' // Replace with the actual metadata value
+                ':userID': userID,
+                ':metadata': 'PORTFOLIO#KEY'
             },
             ScanIndexForward: false,
             Limit: 1
@@ -56,68 +56,70 @@ export const handler = async (event) => {
         const portfolioQueryResult = await dynamoClient.send(portfolioQueryCommand);
         console.log('portfolioQueryResult: ', portfolioQueryResult);
     
+
+
     // Get user's most recent transaction for ticker
         const tickerQueryParams = {
             TableName: dynamicTableName,
             IndexName: LSIName,
             KeyConditionExpression: 'userID = :userID',
-            FilterExpression: 'metadata = :metadata',
+            FilterExpression: 'begins_with(metadata, :tickerPrefix)',
             ExpressionAttributeValues: {
-                ':userID': userID, // Replace with the actual userID
-                ':metadata': 'PORTFOLIO#KEY' // Replace with the actual metadata value
+                ':userID': userID, 
+                ':tickerPrefix': `${ticker}#`, 
             },
             ScanIndexForward: false,
             Limit: 1
         };
         const tickerQueryCommand = new QueryCommand(tickerQueryParams);
         const tickerQueryResult = await dynamoClient.send(tickerQueryCommand);
+        const tickerUnitBalance = tickerQueryResult.Items[0].units;
         console.log('tickerQueryResult: ', tickerQueryResult);
 
     // Create a new entry for stock purchase
+        const sellMetadata = `${ticker}#SELL`;
         const mostRecentItem = stockQueryResult.Items[0];
         const stockPrice = parseFloat(mostRecentItem.price.N); // <--- CURRENT STOCK PRICE AS NUMBER
-        const units = amount / stockPrice;
+        const tickerValue = stockPrice * amount;
+        const units = tickerUnitBalance - amount;
         const uuid = uuidv4();
-        const buyMetadata = `${ticker}#BUY`;
         let portfolio = portfolioQueryResult.Items.portfolio || [];
-        let newPortfolioBalance = 0;
-
-        // Check user's current stock balance
-        if (portfolio.includes(ticker)) {
-            //Query the latest stock purchase or sale for this ticker
-            const currentStockQueryParams = {
-                TableName: dynamicTableName,
-                IndexName: LSIName,
-                KeyConditionExpression: 'userID = :userID',
-                FilterExpression: 'begins_with(metadata, :metaData)',
-                ExpressionAttributeValues: {
-                    ':userID': userID, // Replace with the actual userID
-                    ':metadata': ticker // Replace with the actual metadata value
-                },
-                ScanIndexForward: false,
-                Limit: 1
-            };
-            const currentStockQueryCommand = new QueryCommand(currentStockQueryParams);
-            const currentStockQueryResult = await dynamoClient.send(currentStockQueryCommand);
-
-            // Calculate new balances
-            const lastTickerTransaction = currentStockQueryResult.Items[0];
-            newPortfolioBalance = lastTickerTransaction.balance + units.toFixed(3);
-        } else {
-            portfolio.push(ticker);
-            newPortfolioBalance = units.toFixed(3);
-        }
         
+        if (units < 0) {
+            
+            return {
+                statusCode: 404,
+                body: JSON.stringify({ error: 'Amount request exceeds available units in portfolio.' })
+            };
+        } else if (units == 0) {
+            // Update the user's portfolio array key if necessary
+            const startDate = portfolioQueryResult.Items.date;
+            const tickerIndex = portfolio.indexOf(ticker);
+            portfolio.splice(tickerIndex, 1);
+
+            const putPortfolioParams = {
+                TableName: dynamicTableName,
+                Item: {
+                    userID: {S: userID},
+                    date: {S: startDate},
+                    metadata: {S: 'PORTFOLIO#KEY'},
+                    portfolio: {L: portfolio},
+                }
+            };
+            const putPortfolioCommand = new PutItemCommand(putPortfolioParams);
+            await dynamoClient.send(putPortfolioCommand);
+        }
+
         // Create new purchase entry in db
         const putParams = {
             TableName: dynamicTableName,
             Item: {
                 userID: {S: userID},
                 date: {S: isoDate},
-                metadata: {S: buyMetadata},
-                value: {N: stockPrice.toFixed(2)},  
-                units: {N: units.toFixed(3)},
-                balance: {N: newPortfolioBalance},
+                metadata: {S: sellMetadata},
+                value: {N: tickerValue.toString()},  
+                units: {N: amount.toFixed(3).toString()},
+                balance: {N: units.toFixed(3).toString()},
                 uuid: {S: uuid}
             }
         };
@@ -144,8 +146,8 @@ export const handler = async (event) => {
         var accountBalance = 0;
         if (accountQueryResult.Items.length > 0) {
             let lastAccountItem = accountQueryResult.Items[0];
-            if (lastAccountItem.value && lastAccountItem.value.N) {
-                accountBalance = parseFloat(lastAccountItem.value.N);
+            if (lastAccountItem.balance && lastAccountItem.balance.N) {
+                accountBalance = parseFloat(lastAccountItem.balance.N) + tickerValue;
             }
         } else {
             console.log('No account entries found.');
@@ -154,38 +156,21 @@ export const handler = async (event) => {
         // Update the new account balance after deposit
         currentDate = new Date();
         isoDate = currentDate.toISOString();
-        const withdrawAmount = `-${amount}`;
-        const newAccountBalance = accountBalance - amount;
         const withdrawParams = {
             TableName: dynamicTableName,
             Item: {
                 userID: {S: userID},
                 date: {S: isoDate},
-                metadata: {S: 'ACCOUNT#WITHDRAW'},
-                value: {N: withdrawAmount},
+                metadata: {S: 'ACCOUNT#DEPOSIT'},
+                value: {N: tickerValue.toString()},
                 units: {N: '0'},
-                balance: {N: newAccountBalance.toString()},
+                balance: {N: accountBalance.toString()},
                 uuid: {S: uuid}
             }
         };
 
         const withdrawCommand = new PutItemCommand(withdrawParams);
         await dynamoClient.send(withdrawCommand);
-
-    // Update the user's portfolio array key if necessary
-        const startDate = portfolioQueryResult.Items.date;
-        const putPortfolioParams = {
-            TableName: dynamicTableName,
-            Item: {
-                userID: {S: userID},
-                date: {S: startDate},
-                metadata: {S: 'PORTFOLIO#KEY'},
-                portfolio: {L: portfolio},
-                balance: {S: accountBalance}
-            }
-        };
-        const putPortfolioCommand = new PutItemCommand(putPortfolioParams);
-        await dynamoClient.send(putPortfolioCommand);
 
         return {
             statusCode: 200,
