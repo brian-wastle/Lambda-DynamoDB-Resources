@@ -103,7 +103,7 @@ export const handler = async (event) => {
                     userID: {S: userID},
                     date: {S: startDate},
                     metadata: {S: 'PORTFOLIO#KEY'},
-                    portfolio: {L: portfolio},
+                    portfolio: {SS: portfolio},
                 }
             };
             const putPortfolioCommand = new PutItemCommand(putPortfolioParams);
