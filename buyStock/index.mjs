@@ -8,10 +8,7 @@ export const handler = async (event) => {
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
     const { userID, ticker, amount } = event;
-    let currentDate = new Date();
-    let isoDate = currentDate.toISOString();
     
-
     if (typeof userID !== 'string' || typeof ticker !== 'string' || typeof amount !== 'number' || amount <= 0) {
         return {
             statusCode: 400,
@@ -28,7 +25,8 @@ export const handler = async (event) => {
                 ':ticker': { S: ticker }
             },
             ScanIndexForward: false,
-            Limit: 1
+            Limit: 1,
+            ConsistentRead: true
         };
         const stockQueryCommand = new QueryCommand(stockQueryParams);
         const stockQueryResult = await dynamoClient.send(stockQueryCommand);
@@ -43,71 +41,70 @@ export const handler = async (event) => {
         const portfolioQueryParams = {
             TableName: dynamicTableName,
             IndexName: LSIName,
-            KeyConditionExpression: 'userID = :userID',
-            FilterExpression: 'metadata = :metadata',
+            KeyConditionExpression: 'userID = :userID AND metadata = :metadata',
             ExpressionAttributeValues: {
-                ':userID': userID,
-                ':metadata': 'PORTFOLIO#KEY'
+                ':userID': { S: userID },
+                ':metadata': { S: 'PORTFOLIO#KEY' }
             },
             ScanIndexForward: false,
-            Limit: 1
+            Limit: 1,
+            ConsistentRead: true
         };
         const portfolioQueryCommand = new QueryCommand(portfolioQueryParams);
         try {
             var portfolioQueryResult = await dynamoClient.send(portfolioQueryCommand);
         } catch (error) {
+            console.log("error: ", error);
             var portfolioQueryResult = [];
         }
         
-        
-    // Create a new entry for stock purchase
+    
         const mostRecentItem = stockQueryResult.Items[0];
         const stockPrice = parseFloat(mostRecentItem.price.N); // <--- CURRENT STOCK PRICE AS NUMBER
         const units = amount / stockPrice;
         const uuid = uuidv4();
-        const buyMetadata = `${ticker}#BUY`;
-        
-        console.log(portfolioQueryResult);
-        let portfolio = [];
-        if (portfolioQueryResult.Items?.length > 0) {
-            const portfolioItem = portfolioQueryResult.Items[0];
-            if (portfolioItem.portfolio && portfolioItem.portfolio.L) {
-                portfolio = portfolioItem.portfolio.L.map(item => item.S);
-            }
-        }
-        console.log("Hello World!");
+        const buyMetadata = `${ticker}#BUY`;       
+        let portfolio = portfolioQueryResult.Items?.[0]?.portfolio?.SS ?? [];
         let newPortfolioBalance = 0;
+        var currentDate = new Date();
+        var isoDate = currentDate.toISOString();
+        const startDate = portfolioQueryResult.Items.length > 0 ? portfolioQueryResult?.Items[0]?.date.S : isoDate;
 
+    // Create a new entry for stock purchase
         // Check user's current stock balance
         if (portfolio.includes(ticker)) {
             //Query the latest stock purchase or sale for this ticker
             const currentStockQueryParams = {
                 TableName: dynamicTableName,
                 IndexName: LSIName,
-                KeyConditionExpression: 'userID = :userID',
-                FilterExpression: 'begins_with(metadata, :metaData)',
+                KeyConditionExpression: 'userID = :userID AND begins_with(metadata, :metadata)',
                 ExpressionAttributeValues: {
-                    ':userID': userID,
-                    ':metadata': ticker
+                    ':userID': {S: userID},
+                    ':metadata': {S: `${ticker}#`}
                 },
                 ScanIndexForward: false,
-                Limit: 1
+                ConsistentRead: true
             };
             const currentStockQueryCommand = new QueryCommand(currentStockQueryParams);
-            const currentStockQueryResult = await dynamoClient.send(currentStockQueryCommand);
-
-            // Calculate new balances
-            if (currentStockQueryResult.Items.length > 0) {
-                const lastTickerTransaction = currentStockQueryResult.Items[0];
-                newPortfolioBalance = parseFloat(lastTickerTransaction.balance.N) + parseFloat(units.toFixed(3));
+            try {
+                const currentStockQueryResult = await dynamoClient.send(currentStockQueryCommand);
+                const latestStockTransaction = findMostRecentItem(currentStockQueryResult.Items, 'date');
+                const stockBalance = parseFloat(latestStockTransaction?.balance?.N ?? '0');
+                var newStockBalance = (stockBalance + units).toFixed(3);
+            } catch (error) {
+                console.error("DynamoDB error:", error);
             }
         } else {
             portfolio.push(ticker);
-            newPortfolioBalance = units.toFixed(3);
+            newStockBalance = units.toFixed(3);
         }
         
         // Create new purchase entry in db
-        const putParams = {
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+        await delay(1);
+        currentDate = new Date();
+        isoDate = currentDate.toISOString();
+        const buyPutParams = {
             TableName: dynamicTableName,
             Item: {
                 userID: {S: userID},
@@ -115,12 +112,12 @@ export const handler = async (event) => {
                 metadata: {S: buyMetadata},
                 value: {N: stockPrice.toFixed(2)},  
                 units: {N: units.toFixed(3)},
-                balance: {N: newPortfolioBalance.toString()},
+                balance: {N: newStockBalance.toString()},
                 uuid: {S: uuid}
             }
         };
-        const putCommand = new PutItemCommand(putParams);
-        await dynamoClient.send(putCommand);
+        const buyPutCommand = new PutItemCommand(buyPutParams);
+        await dynamoClient.send(buyPutCommand);
 
     // Add an entry for ACCOUNT#WITHDRAW metadata
         // Get the current account balance
@@ -129,57 +126,59 @@ export const handler = async (event) => {
             IndexName: LSIName,
             KeyConditionExpression: 'userID = :userID AND begins_with(metadata, :skPrefix)',
             ExpressionAttributeValues: {
-                ':userID': {S: userID},
-                ':skPrefix': {S: 'ACCOUNT#'}
+                ':userID': { S: userID },
+                ':skPrefix': { S: 'ACCOUNT' }
             },
             ScanIndexForward: false,
-            Limit: 1
+            ConsistentRead: true
         };
-        
         const accountQueryCommand = new QueryCommand(accountQueryParams);
         const accountQueryResult = await dynamoClient.send(accountQueryCommand);
 
-        var accountBalance = 0;
+        let accountBalance = 0;
+        let latestAccountTransaction = null;
+
+        // Find the most recent item by date
         if (accountQueryResult.Items.length > 0) {
-            let lastAccountItem = accountQueryResult.Items[0];
-            if (lastAccountItem.balance && lastAccountItem.balance.N) {
-                accountBalance = parseFloat(lastAccountItem.balance.N);
-            }
+            latestAccountTransaction = findMostRecentItem(accountQueryResult.Items, 'date')
+            accountBalance = parseFloat(latestAccountTransaction?.balance?.N ?? '0');
         } else {
-            console.log('No account entries found.');
+            return {
+                statusCode: 400,
+                body: JSON.stringify({ message: 'No cash account exists for this user. Try making an initial deposit first.' })
+            };
         }
 
         // Update the new account balance after withdrawal
-        currentDate = new Date();
-        isoDate = currentDate.toISOString();
+        const accountDate = new Date();
+        const accountIsoDate = accountDate.toISOString();
         const withdrawAmount = `-${amount}`;
         const newAccountBalance = accountBalance - amount;
+
         const withdrawParams = {
             TableName: dynamicTableName,
             Item: {
-                userID: {S: userID},
-                date: {S: isoDate},
-                metadata: {S: 'ACCOUNT#WITHDRAW'},
-                value: {N: withdrawAmount},
-                units: {N: '0'},
-                balance: {N: newAccountBalance.toString()},
-                uuid: {S: uuid}
+                userID: { S: userID },
+                date: { S: accountIsoDate },
+                metadata: { S: 'ACCOUNT#WITHDRAW' },
+                value: { N: withdrawAmount },
+                units: { N: "0" },
+                balance: { N: newAccountBalance.toString() },
+                uuid: { S: uuid }
             }
         };
-
         const withdrawCommand = new PutItemCommand(withdrawParams);
+        console.log("withdrawParams: ", withdrawParams);
         await dynamoClient.send(withdrawCommand);
-
+                
     // Update the user's portfolio array key
-        isoDate = currentDate.toISOString();
-        const startDate = portfolioQueryResult.Items.length > 0 ? portfolioQueryResult.Items[0].date.S : isoDate;
         const putPortfolioParams = {
             TableName: dynamicTableName,
             Item: {
                 userID: {S: userID},
                 date: {S: startDate},
                 metadata: {S: 'PORTFOLIO#KEY'},
-                portfolio: {L: portfolio},
+                portfolio: {SS: portfolio},
             }
         };
         const putPortfolioCommand = new PutItemCommand(putPortfolioParams);
@@ -187,13 +186,29 @@ export const handler = async (event) => {
 
         return {
             statusCode: 200,
-            body: JSON.stringify({ message: 'Stock purchase and account withdrawal entries created successfully.' })
+            body: JSON.stringify({ message: 'Stock purchase complete. Database updated successfully!' })
         };
+        
     } catch (error) {
         console.error('Error:', error);
         return {
             statusCode: 500,
             body: JSON.stringify({ error: 'Internal Server Error' })
         };
+    }
+    
+    function findMostRecentItem(items, dateField) {
+        if (!Array.isArray(items) || items.length === 0) {
+            return null;
+        }
+    
+        return items.reduce((latest, item) => {
+            const itemDate = item[dateField]?.S; // Access the date field
+            const latestDate = latest ? latest[dateField]?.S : null;
+            if (!latestDate || (itemDate && itemDate > latestDate)) {
+                return item;
+            }
+            return latest;
+        }, null);
     }
 };
