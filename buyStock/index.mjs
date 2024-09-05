@@ -65,16 +65,15 @@ export const handler = async (event) => {
         const uuid = uuidv4();
         const buyMetadata = `${ticker}#BUY`;       
         let portfolio = portfolioQueryResult.Items?.[0]?.portfolio?.SS ?? [];
-        let newPortfolioBalance = 0;
-        var currentDate = new Date();
-        var isoDate = currentDate.toISOString();
+        let currentDate = new Date();
+        let isoDate = currentDate.toISOString();
         const startDate = portfolioQueryResult.Items.length > 0 ? portfolioQueryResult?.Items[0]?.date.S : isoDate;
 
     // Create a new entry for stock purchase
         // Check user's current stock balance
         if (portfolio.includes(ticker)) {
             //Query the latest stock purchase or sale for this ticker
-            const currentStockQueryParams = {
+            const currentTickerQueryParams = {
                 TableName: dynamicTableName,
                 IndexName: LSIName,
                 KeyConditionExpression: 'userID = :userID AND begins_with(metadata, :metadata)',
@@ -85,18 +84,18 @@ export const handler = async (event) => {
                 ScanIndexForward: false,
                 ConsistentRead: true
             };
-            const currentStockQueryCommand = new QueryCommand(currentStockQueryParams);
+            const currentTickerQueryCommand = new QueryCommand(currentTickerQueryParams);
             try {
-                const currentStockQueryResult = await dynamoClient.send(currentStockQueryCommand);
-                const latestStockTransaction = findMostRecentItem(currentStockQueryResult.Items, 'date');
-                const stockBalance = parseFloat(latestStockTransaction?.balance?.N ?? '0');
-                var newStockBalance = (stockBalance + units).toFixed(3);
+                const currentTickerQueryResult = await dynamoClient.send(currentTickerQueryCommand);
+                const latestTickerTransaction = findMostRecentItem(currentTickerQueryResult.Items, 'date');
+                const stockBalance = parseFloat(latestTickerTransaction?.balance?.N ?? '0');
+                var newTickerBalance = (stockBalance + units).toFixed(3);
             } catch (error) {
                 console.error("DynamoDB error:", error);
             }
         } else {
             portfolio.push(ticker);
-            newStockBalance = units.toFixed(3);
+            newTickerBalance = units.toFixed(3);
         }
         
         // Create new purchase entry in db
@@ -104,6 +103,9 @@ export const handler = async (event) => {
         await delay(1);
         currentDate = new Date();
         isoDate = currentDate.toISOString();
+        const roundedAmount = roundUnits(units);
+
+        const roundedBalance = roundUnits(newTickerBalance);
         const buyPutParams = {
             TableName: dynamicTableName,
             Item: {
@@ -111,8 +113,8 @@ export const handler = async (event) => {
                 date: {S: isoDate},
                 metadata: {S: buyMetadata},
                 value: {N: stockPrice.toFixed(2)},  
-                units: {N: units.toFixed(3)},
-                balance: {N: newStockBalance.toString()},
+                units: {N: roundedAmount.toFixed(3)},
+                balance: {N: roundedBalance.toFixed(3)},
                 uuid: {S: uuid}
             }
         };
@@ -140,7 +142,7 @@ export const handler = async (event) => {
 
         // Find the most recent item by date
         if (accountQueryResult.Items.length > 0) {
-            latestAccountTransaction = findMostRecentItem(accountQueryResult.Items, 'date')
+            latestAccountTransaction = findMostRecentItem(accountQueryResult.Items, 'date');
             accountBalance = parseFloat(latestAccountTransaction?.balance?.N ?? '0');
         } else {
             return {
@@ -163,7 +165,7 @@ export const handler = async (event) => {
                 metadata: { S: 'ACCOUNT#WITHDRAW' },
                 value: { N: withdrawAmount },
                 units: { N: "0" },
-                balance: { N: newAccountBalance.toString() },
+                balance: { N: newAccountBalance.toFixed(2) },
                 uuid: { S: uuid }
             }
         };
@@ -197,11 +199,14 @@ export const handler = async (event) => {
         };
     }
     
+    function roundUnits(num) {
+        return Math.round(num * 1000) / 1000;
+    }
+
     function findMostRecentItem(items, dateField) {
         if (!Array.isArray(items) || items.length === 0) {
             return null;
         }
-    
         return items.reduce((latest, item) => {
             const itemDate = item[dateField]?.S; // Access the date field
             const latestDate = latest ? latest[dateField]?.S : null;
