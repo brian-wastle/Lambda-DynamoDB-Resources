@@ -7,7 +7,7 @@ export const handler = async (event) => {
     const dynamicTableName = process.env.ENTRY_TABLE_NAME;
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
-    const { userID, ticker, amount } = event;
+    const { userID, ticker, amount } = JSON.parse(event.body);
     
 
     if (typeof userID !== 'string' || typeof ticker !== 'string' || typeof amount !== 'number' || amount <= 0) {

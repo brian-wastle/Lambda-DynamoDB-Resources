@@ -1,4 +1,4 @@
-import { DynamoDBClient, QueryCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
 
 const dynamoClient = new DynamoDBClient({ region: 'us-east-1' });
 
@@ -6,11 +6,36 @@ export const handler = async (event) => {
     const dynamicTableName = process.env.ENTRY_TABLE_NAME;
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
-    const { userID } = event;
+    
+    let userID;
+    try {
+        const body = JSON.parse(event.body);
+        userID = body.userID;
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: 'Bad Request: Invalid JSON input.' })
+        };
+    }
+
+    if (typeof userID !== 'string') {
+        return {
+            statusCode: 400,
+            body: JSON.stringify({ error: 'Bad Request: Invalid input type.' })
+        };
+    }
+
+    const corsHeaders = {
+        "Access-Control-Allow-Origin": "http://localhost:4200", 
+        "Access-Control-Allow-Methods": "OPTIONS,POST",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    };
     
     if (typeof userID !== 'string') {
         return {
             statusCode: 400,
+            headers: corsHeaders,
             body: JSON.stringify({ error: 'Bad Request: Invalid input type.' })
         };
     }
@@ -33,7 +58,7 @@ export const handler = async (event) => {
         const portfolioQueryResult = await dynamoClient.send(portfolioQueryCommand);
         const portfolio = portfolioQueryResult.Items?.[0]?.portfolio?.SS ?? [];
 
-        // Fetch balance and price for each ticker
+        // Fetch balance and price for each ticker in portfolio
         const results = [];
         for (const ticker of portfolio) {
             // get latest stock balance
@@ -79,12 +104,13 @@ export const handler = async (event) => {
                 console.error(`DynamoDB error for ticker ${ticker}:`, error);
             }
 
-            // Push the results
+            // push the results to array
             results.push({ ticker, balance: stockBalance, price: stockPrice });
         }
 
         return {
             statusCode: 200,
+            headers: corsHeaders,
             body: JSON.stringify(results)
         };
         
@@ -92,16 +118,18 @@ export const handler = async (event) => {
         console.error('Error:', error);
         return {
             statusCode: 500,
+            headers: corsHeaders,
             body: JSON.stringify({ error: 'Internal Server Error' })
         };
     }
 
+    //get most recent entry for each stock in portfolio
     function findMostRecentItem(items, dateField) {
         if (!Array.isArray(items) || items.length === 0) {
             return null;
         }
         return items.reduce((latest, item) => {
-            const itemDate = item[dateField]?.S; // Access the date field
+            const itemDate = item[dateField]?.S;
             const latestDate = latest ? latest[dateField]?.S : null;
             if (!latestDate || (itemDate && itemDate > latestDate)) {
                 return item;

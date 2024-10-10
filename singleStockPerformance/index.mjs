@@ -1,4 +1,4 @@
-import { DynamoDBClient, QueryCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
 
 const dynamoClient = new DynamoDBClient({ region: 'us-east-1' });
 
@@ -32,20 +32,18 @@ export const handler = async (event) => {
             const tickerQueryCommand = new QueryCommand(tickerQueryParams);
             const tickerQueryResult = await dynamoClient.send(tickerQueryCommand);
             const transactionArray = tickerQueryResult.Items;
-            console.log("transactionArray: ", transactionArray);
-            const newArray = transactionArray.sort((a, b) => {
+            var sortedArray = transactionArray.sort((a, b) => {
                 const dateA = new Date(a.date.S).getTime();
                 const dateB = new Date(b.date.S).getTime();
                 return dateB - dateA;
             });
-            console.log("newArray: ", newArray);
         } catch (error) {
             console.error(`DynamoDB error for ticker ${ticker}:`, error);
         }
 
         return {
             statusCode: 200,
-            body: JSON.stringify('Success!')
+            body: JSON.stringify(sortedArray)
         }
 
     } catch (error) {
