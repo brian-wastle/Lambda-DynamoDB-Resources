@@ -6,6 +6,12 @@ export const handler = async (event) => {
     const dynamicTableName = process.env.ENTRY_TABLE_NAME;
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
+
+    const corsHeaders = {
+        "Access-Control-Allow-Origin": "http://localhost:4200", 
+        "Access-Control-Allow-Methods": "OPTIONS,POST",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    };
     
     let userID;
     try {
@@ -26,11 +32,7 @@ export const handler = async (event) => {
         };
     }
 
-    const corsHeaders = {
-        "Access-Control-Allow-Origin": "http://localhost:4200", 
-        "Access-Control-Allow-Methods": "OPTIONS,POST",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-    };
+    
     
     if (typeof userID !== 'string') {
         return {
