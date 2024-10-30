@@ -3,7 +3,21 @@ import { v4 as uuidv4 } from 'uuid';
 
 const dynamoClient = new DynamoDBClient({ region: 'us-east-1' });
 
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "http://localhost:4200",
+    "Access-Control-Allow-Methods": "OPTIONS, GET, POST",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+};
+
 export const handler = async (event) => {
+    if (event.httpMethod === 'OPTIONS') {
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ message: 'CORS preflight response' })
+        };
+    }
+
     const dynamicTableName = process.env.ENTRY_TABLE_NAME;
     const staticTableName = process.env.STATIC_TABLE_NAME;
     const LSIName = process.env.LSI_NAME;
@@ -13,6 +27,7 @@ export const handler = async (event) => {
     if (typeof userID !== 'string' || typeof ticker !== 'string' || typeof amount !== 'number' || amount <= 0) {
         return {
             statusCode: 400,
+            headers: corsHeaders,
             body: JSON.stringify({ error: 'Bad Request: Invalid input type.' })
         };
     }
@@ -33,6 +48,7 @@ export const handler = async (event) => {
         if (stockQueryResult.Items.length === 0) {
             return {
                 statusCode: 404,
+                headers: corsHeaders,
                 body: JSON.stringify({ error: 'Stock price not found for the ticker.' })
             };
         }
@@ -89,6 +105,7 @@ export const handler = async (event) => {
         } catch (error) {
             return {
                 statusCode: 404,
+                headers: corsHeaders,
                 body: JSON.stringify({ error: 'No units in portfolio for this ticker.' })
             };
         }
@@ -97,6 +114,7 @@ export const handler = async (event) => {
         if (newTickerBalance < 0) {
             return {
                 statusCode: 404,
+                headers: corsHeaders,
                 body: JSON.stringify({ error: 'Amount requested exceeds available units in portfolio.' })
             };
         } else if (newTickerBalance == 0) {
@@ -164,6 +182,7 @@ export const handler = async (event) => {
         } else {
             return {
                 statusCode: 400,
+                headers: corsHeaders,
                 body: JSON.stringify({ message: 'No cash account exists for this user. Try making an initial deposit first.' })
             };
         }
@@ -191,12 +210,14 @@ export const handler = async (event) => {
 
         return {
             statusCode: 200,
+            headers: corsHeaders,
             body: JSON.stringify({ message: 'Stock purchase and account withdrawal entries created successfully.' })
         };
     } catch (error) {
         console.error('Error:', error);
         return {
             statusCode: 500,
+            headers: corsHeaders,
             body: JSON.stringify({ error: 'Internal Server Error' })
         };
     }

@@ -18,6 +18,7 @@ export const handler = async (event) => {
         const body = JSON.parse(event.body);
         userID = body.userID;
     } catch (error) {
+        
         return {
             statusCode: 400,
             headers: corsHeaders,

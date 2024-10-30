@@ -4,53 +4,65 @@ const dynamoClient = new DynamoDBClient({ region: 'us-east-1' });
 
 export const handler = async (event) => {
 
-    const dynamicTableName = process.env.ENTRY_TABLE_NAME;
-    const LSIName = process.env.LSI_NAME;
-    const { userID, ticker } = event;
+    const corsHeaders = {
+        "Access-Control-Allow-Origin": "http://localhost:4200",
+        "Access-Control-Allow-Methods": "OPTIONS,GET",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    };
+    
+    const userID = event.queryStringParameters?.userID;
+    const ticker = event.queryStringParameters?.ticker;
 
-//get all transactions for this specific ticker
+    if (!userID || !ticker) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: 'Bad Request: userID and ticker are required parameters.' })
+        };
+    }
 
     try {
-        const tickerQueryParams = {
-            TableName: dynamicTableName,
-            IndexName: LSIName,
-            KeyConditionExpression: 'userID = :userID AND begins_with(metadata, :metadata)',
-            ExpressionAttributeValues: {
-                ':userID': { S: userID },
-                ':metadata': { S: `${ticker}#` }
-            },
-            ProjectionExpression: '#d, balance, metadata, units, #v',
-            ExpressionAttributeNames: {
-                '#d': 'date',  
-                '#v': 'value'
-            },
-            ScanIndexForward: false,
-            ConsistentRead: true
+        const queryTransactionsByType = async (metadataType) => {
+            const queryParams = {
+                TableName: process.env.ENTRY_TABLE_NAME,
+                IndexName: process.env.LSIName,
+                KeyConditionExpression: 'userID = :userID AND begins_with(#LSI_NAME, :metadata)',
+                ExpressionAttributeNames: {
+                    '#LSI_NAME': process.env.LSIName
+                },
+                ExpressionAttributeValues: {
+                    ':userID': { S: userID },
+                    ':metadata': { S: `${ticker}#${metadataType}` }
+                },
+                ScanIndexForward: false,
+                ConsistentRead: true
+            };
+
+            const queryCommand = new QueryCommand(queryParams);
+            const queryResult = await dynamoClient.send(queryCommand);
+            return queryResult.Items || [];
         };
 
-        try {
-            const tickerQueryCommand = new QueryCommand(tickerQueryParams);
-            const tickerQueryResult = await dynamoClient.send(tickerQueryCommand);
-            const transactionArray = tickerQueryResult.Items;
-            var sortedArray = transactionArray.sort((a, b) => {
-                const dateA = new Date(a.date.S).getTime();
-                const dateB = new Date(b.date.S).getTime();
-                return dateB - dateA;
-            });
-        } catch (error) {
-            console.error(`DynamoDB error for ticker ${ticker}:`, error);
-        }
+        const buyTransactions = await queryTransactionsByType('BUY');
+        const sellTransactions = await queryTransactionsByType('SELL');
+
+        const transactions = {
+            buy: buyTransactions,
+            sell: sellTransactions
+        };
 
         return {
             statusCode: 200,
-            body: JSON.stringify(sortedArray)
-        }
+            headers: corsHeaders,
+            body: JSON.stringify(transactions)
+        };
 
     } catch (error) {
         console.error('Error:', error);
         return {
             statusCode: 500,
+            headers: corsHeaders,
             body: JSON.stringify({ error: 'Internal Server Error' })
-        }
+        };
     }
-}
+};

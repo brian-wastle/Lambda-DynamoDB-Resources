@@ -9,7 +9,6 @@ export const handler = async (event) => {
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
     };
 
-    // Handle preflight (OPTIONS) requests
     if (event.httpMethod === 'OPTIONS') {
         return {
             statusCode: 200,
@@ -19,11 +18,8 @@ export const handler = async (event) => {
     }
 
     const tableName = process.env.TABLE_NAME;
-
-    // Extract query string parameters
     const { ticker } = event.queryStringParameters || {};
 
-    // Validate the query parameters
     if (!ticker) {
         return {
             statusCode: 400,
@@ -33,7 +29,8 @@ export const handler = async (event) => {
     }
 
     try {
-        const queryParams = {
+        //query for prices
+        const entriesQueryParams = {
             TableName: tableName,
             KeyConditionExpression: 'ticker = :ticker',
             ExpressionAttributeValues: {
@@ -41,10 +38,23 @@ export const handler = async (event) => {
             }
         };
 
-        const queryCommand = new QueryCommand(queryParams);
-        const queryResult = await dynamoClient.send(queryCommand);
+        const entriesQueryCommand = new QueryCommand(entriesQueryParams);
+        const entriesQueryResult = await dynamoClient.send(entriesQueryCommand);
 
-        if (!queryResult.Items || queryResult.Items.length === 0) {
+        // metadata query
+        const metadataTicker = `${ticker}#metadata`;
+        const metadataQueryParams = {
+            TableName: tableName,
+            KeyConditionExpression: 'ticker = :ticker',
+            ExpressionAttributeValues: {
+                ':ticker': { S: metadataTicker }
+            }
+        };
+
+        const metadataQueryCommand = new QueryCommand(metadataQueryParams);
+        const metadataQueryResult = await dynamoClient.send(metadataQueryCommand);
+
+        if (!entriesQueryResult.Items || entriesQueryResult.Items.length === 0) {
             return {
                 statusCode: 404,
                 headers: corsHeaders,
@@ -52,10 +62,15 @@ export const handler = async (event) => {
             };
         }
 
+        const stockData = {
+            priceData: entriesQueryResult.Items,
+            metadata: metadataQueryResult.Items || [] 
+        };
+
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({ data: queryResult.Items })
+            body: JSON.stringify(stockData)
         };
     } catch (error) {
         console.error('Error querying DynamoDB:', error);
